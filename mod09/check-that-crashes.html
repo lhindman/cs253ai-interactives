@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  Module 09, Session 2: an assistant's NULL check, and the call that gets
+  past it. Linked from the Canvas page "Session 2 on Your Own". The code is
+  demo/critique.c verbatim, with its real line numbers; lines 41 to 58 (the
+  comparator and the sort) are elided because no call here reaches them.
+
+  Measured Oct 22 2026 on Ubuntu 24.04, gcc 13.3.0, -O0: the program output,
+  the shell's crash line, and the gdb backtrace are pasted, not paraphrased.
+-->
+<title>Crashing NULL Check</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Source+Sans+3:wght@400;600;700&display=swap">
+<style>
+/* Layout: controls on top; code and terminal left, narration, the check, and an address strip right. */
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --fg: #1b2330;
+  --muted: #5d6878;
+  --line: #d9dee6;
+  --accent: #1f4e8c;
+  --accent-soft: #e3ecf8;
+  --hl: #fff3c4;
+  --good: #1e7a46;
+  --good-soft: #e1f3e8;
+  --bad: #b3261e;
+  --bad-soft: #fbe4e2;
+  --code-bg: #f0f2f6;
+  --term-bg: #1b2330;
+  --term-fg: #e6eaf0;
+  --void: #eceff4;
+  --font-body: "Source Sans 3", "Source Sans Pro", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11151c; --surface: #1a202a; --fg: #e6eaf0; --muted: #9aa5b5; --line: #2c3442;
+    --accent: #7fb0f5; --accent-soft: #1f2d44; --hl: #4a4116;
+    --good: #6fd39a; --good-soft: #17301f; --bad: #f38b82; --bad-soft: #3a1d1b;
+    --code-bg: #151a22; --term-bg: #0b0e13; --term-fg: #e6eaf0; --void: #1f2530;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11151c; --surface: #1a202a; --fg: #e6eaf0; --muted: #9aa5b5; --line: #2c3442;
+  --accent: #7fb0f5; --accent-soft: #1f2d44; --hl: #4a4116;
+  --good: #6fd39a; --good-soft: #17301f; --bad: #f38b82; --bad-soft: #3a1d1b;
+  --code-bg: #151a22; --term-bg: #0b0e13; --term-fg: #e6eaf0; --void: #1f2530;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body {
+  margin: 0;
+  background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 1.0625rem; line-height: 1.5;
+  padding-block: 1.5rem 3rem;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.wrap { max-width: 68rem; margin: 0 auto; display: grid; gap: 1rem; }
+header h1 { font-size: 1.75rem; margin: 0; text-wrap: balance; letter-spacing: -0.01em; }
+header p { margin: 0.25rem 0 0; color: var(--muted); max-width: 64ch; }
+code, .mono { font-family: var(--font-mono); font-size: 0.92em; }
+
+.controls { display: flex; flex-wrap: wrap; gap: 0.6rem 1rem; align-items: center; }
+.group { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+button {
+  font: inherit; font-size: 0.95rem; color: var(--fg); background: var(--surface);
+  border: 1px solid var(--line); border-radius: 6px; padding: 0.4rem 0.8rem; cursor: pointer;
+}
+button:hover { border-color: var(--accent); }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button.primary { background: var(--accent); color: var(--surface); border-color: var(--accent); font-weight: 600; }
+button[disabled] { opacity: 0.45; cursor: default; }
+
+.main { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 1rem; align-items: start; }
+@media (max-width: 820px) { .main { grid-template-columns: minmax(0, 1fr); } }
+.col { display: grid; gap: 0.75rem; min-width: 0; }
+
+.code { background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px; padding: 0.5rem 0; overflow-x: auto; }
+.code pre { margin: 0; font-family: var(--font-mono); font-size: 0.82rem; line-height: 1.55; }
+.code .ln { display: block; padding: 0 1rem 0 0; white-space: pre; }
+.code .ln::before { content: attr(data-n); display: inline-block; width: 2.4rem; text-align: right; padding-right: 0.9rem; color: var(--muted); }
+.code .ln.on { background: var(--hl); }
+.code .ln.err { background: var(--bad-soft); }
+.code .ln.gap { color: var(--muted); font-style: italic; font-family: var(--font-body); }
+
+.term { background: var(--term-bg); color: var(--term-fg); border-radius: 8px; padding: 0.55rem 0.8rem; font-family: var(--font-mono); font-size: 0.8rem; line-height: 1.45; min-height: 5.6rem; overflow-x: auto; white-space: pre; }
+.term .p { color: #8fa3bf; }
+.term .e { color: #ff8f86; font-weight: 600; }
+
+.narr { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 0.7rem 0.9rem; min-height: 7.2rem; }
+.narr .k, .panel .k { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.narr p { margin: 0.15rem 0 0; }
+
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 0.7rem 0.9rem 0.8rem; display: grid; gap: 0.5rem; }
+
+/* The call stack, innermost last. */
+.stack { display: grid; gap: 0.25rem; font-family: var(--font-mono); font-size: 0.8rem; }
+.stack div { padding: 0.25rem 0.5rem; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); overflow-x: auto; white-space: nowrap; }
+.stack div.top { border-color: var(--accent); background: var(--accent-soft); }
+.stack div.dead { border-color: var(--bad); background: var(--bad-soft); }
+
+/* The check, evaluated. */
+.check { font-family: var(--font-mono); font-size: 0.95rem; display: flex; flex-wrap: wrap; gap: 0.3rem 0.6rem; align-items: baseline; }
+.check .arrow { color: var(--muted); }
+.verdict { font-weight: 700; border-radius: 999px; padding: 0.05rem 0.6rem; font-size: 0.85rem; }
+.verdict.t { background: var(--good-soft); color: var(--good); }
+.verdict.f { background: var(--bad-soft); color: var(--bad); }
+.verdict.n { background: var(--code-bg); color: var(--muted); font-family: var(--font-body); font-weight: 400; }
+
+/* The address strip: 0x00 to 0x30, the array count believes it has. */
+.strip { position: relative; display: grid; grid-template-columns: repeat(3, 1fr); border: 1px dashed var(--muted); border-radius: 6px; background: var(--void); overflow: hidden; }
+.slot { padding: 0.5rem 0.4rem 0.45rem; border-right: 1px dashed var(--muted); text-align: center; min-width: 0; }
+.slot:last-child { border-right: 0; }
+.slot b { display: block; font-family: var(--font-mono); font-size: 0.82rem; }
+.slot span { font-family: var(--font-mono); font-size: 0.75rem; color: var(--muted); }
+.slot.cur { background: var(--accent-soft); }
+.slot.cur b { color: var(--accent); }
+.slot.boom { background: var(--bad-soft); animation: boom 0.7s ease-out; }
+.slot.boom b { color: var(--bad); }
+@keyframes boom { 0% { box-shadow: inset 0 0 0 4px var(--bad); } 100% { box-shadow: inset 0 0 0 0 transparent; } }
+.strip-note { font-size: 0.85rem; color: var(--muted); margin: 0; }
+.marker { display: grid; grid-template-columns: repeat(3, 1fr); font-family: var(--font-mono); font-size: 0.8rem; text-align: center; color: var(--accent); font-weight: 600; min-height: 1.3rem; }
+.marker .boom { color: var(--bad); }
+
+.foot { font-size: 0.9rem; color: var(--muted); margin: 0; max-width: 76ch; }
+.foot + .foot { margin-top: -0.4rem; }
+kbd { font-family: var(--font-mono); font-size: 0.8rem; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 0.3rem; background: var(--surface); }
+@media (prefers-reduced-motion: reduce) { .slot.boom { animation: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>The check that crashes</h1>
+    <p>Four functions an assistant wrote in one reply. <code>record_matches_level</code> checks for NULL; <code>count_by_level</code> does not, and leans on that check instead. Step through the three calls in <code>main</code> and watch the third one get past the check and crash on it.</p>
+  </header>
+
+  <div class="controls">
+    <div class="group">
+      <button id="btnBack" aria-label="Step back">Back</button>
+      <button id="btnStep" class="primary">Step</button>
+      <button id="btnPlay">Play</button>
+      <button id="btnReset">Reset</button>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="col">
+      <div class="code" aria-label="critique.c"><pre id="code"></pre></div>
+      <div class="term" id="term" aria-label="Terminal" aria-live="polite"></div>
+    </div>
+    <div class="col">
+      <div class="narr" aria-live="polite">
+        <span class="k" id="stepNo">Step 1</span>
+        <p id="narr"></p>
+      </div>
+      <div class="panel">
+        <span class="k">Call stack, innermost last</span>
+        <div class="stack" id="stack"></div>
+      </div>
+      <div class="panel">
+        <span class="k">The check on line 24, first part</span>
+        <div class="check" id="check"></div>
+      </div>
+      <div class="panel">
+        <span class="k">The array <code>count_by_level</code> thinks it has</span>
+        <div class="strip" id="strip"></div>
+        <div class="marker" id="marker"></div>
+        <p class="strip-note">Each <code>struct LogRecord</code> here is 16 bytes, so element <code>i</code> is at <code>records + 16 &times; i</code>. With <code>records</code> NULL there is no array: every one of these addresses is in the first page of memory, where nothing is ever mapped, so any read there crashes. The check only catches the first.</p>
+      </div>
+    </div>
+  </div>
+
+  <p class="foot">Keys: <kbd>&rarr;</kbd> or <kbd>Space</kbd> step, <kbd>&larr;</kbd> back, <kbd>P</kbd> play. Measured on Ubuntu 24.04 with gcc 13.3.0 at <code>-O0</code>: the output, the crash and the backtrace are pasted from a real run. Strictly, computing <code>&amp;records[1]</code> from a NULL <code>records</code> is already undefined behaviour; <code>0x10</code> is what this compiler does with it, which is why the address looks so believable.</p>
+  <p class="foot">In Lab 09 the same mistake looks the same with a bigger number. <code>LogRecord</code> there is 144 bytes, so the second element is at <code>0x90</code>, and <code>make test</code> dies with a bare <code>Segmentation fault</code>. <code>gdb -batch -ex run -ex bt ./run_tests</code> shows you where.</p>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* demo/critique.c, real line numbers. null marks the elided comparator and sort. */
+  var SRC = [
+    [17, 'struct LogRecord {'],
+    [18, '  const char *level; /* e.g. "INFO", "ERROR" */'],
+    [19, '  long duration_ms;'],
+    [20, '};'],
+    [21, ''],
+    [22, '/* Returns 1 if the record\'s level equals `level`, 0 otherwise. */'],
+    [23, 'int record_matches_level(const struct LogRecord *rec, const char *level) {'],
+    [24, '  if (rec == NULL || rec->level == NULL || level == NULL) {'],
+    [25, '    return 0;'],
+    [26, '  }'],
+    [27, '  return strcmp(rec->level, level) == 0;'],
+    [28, '}'],
+    [29, ''],
+    [30, '/* Counts the records in `records[0..n)` whose level equals `level`. */'],
+    [31, 'size_t count_by_level(const struct LogRecord *records, size_t n, const char *level) {'],
+    [32, '  size_t count = 0;'],
+    [33, ''],
+    [34, '  for (size_t i = 0; i < n; i++) {'],
+    [35, '    if (record_matches_level(&records[i], level)) {'],
+    [36, '      count++;'],
+    [37, '    }'],
+    [38, '  }'],
+    [39, '  return count;'],
+    [40, '}'],
+    [null, 'lines 41 to 58: the comparator and the sort, which no call here reaches'],
+    [59, 'int main(void) {'],
+    [60, '  printf("matches(NULL, \\"INFO\\")  = %d\\n", record_matches_level(NULL, "INFO"));'],
+    [61, '  printf("count(NULL, 0, \\"INFO\\") = %zu\\n", count_by_level(NULL, 0, "INFO"));'],
+    [62, '  fflush(stdout); /* so the line above is on screen before the crash */'],
+    [63, '  printf("count(NULL, 3, \\"INFO\\") = %zu\\n", count_by_level(NULL, 3, "INFO"));'],
+    [64, '  return 0;'],
+    [65, '}']
+  ];
+
+  var P = '<span class="p">$</span> ';
+  var OUT1 = 'matches(NULL, "INFO")  = 0';
+  var OUT2 = 'count(NULL, 0, "INFO") = 0';
+  var BUILD = P + 'gcc -std=c11 -Wall -Wextra -g critique.c -o critique\n' + P + './critique';
+  var CRASH = '<span class="e">Segmentation fault (core dumped)</span>';
+  var GDB = '\n' + P + 'gdb -batch -ex run -ex bt ./critique\n' +
+    '<span class="p">(start-up messages and the first two output lines trimmed)</span>\n' +
+    'Program received signal SIGSEGV, Segmentation fault.\n' +
+    '0x00005555555551c8 in record_matches_level (rec=<span class="e">0x10</span>, level=0x555555556004 "INFO") at critique.c:24\n' +
+    '24\t  if (rec == NULL || rec-&gt;level == NULL || level == NULL) {\n' +
+    '#0  0x00005555555551c8 in record_matches_level (rec=<span class="e">0x10</span>, level=0x555555556004 "INFO") at critique.c:24\n' +
+    '#1  0x0000555555555249 in count_by_level (records=0x0, n=3, level=0x555555556004 "INFO") at critique.c:35\n' +
+    '#2  0x000055555555538f in main () at critique.c:63';
+  function term(lines) { return BUILD + (lines ? "\n" + lines : ""); }
+
+  var MAIN = "main ()";
+  /* stack: frames, outermost first. check: null, or [lhs, verdict]. slot: which element rec is at. */
+  var STEPS = [
+    { line: 59, stack: [MAIN], check: null, slot: null, term: term(""),
+      text: "main makes three calls, and every one of them passes NULL where an array of records belongs. The question is which of them the NULL check in record_matches_level actually protects." },
+    { line: 60, stack: [MAIN, "record_matches_level (rec=0x0, level=\"INFO\")"], check: null, slot: null, term: term(""),
+      text: "First call: record_matches_level is handed NULL directly. rec is 0x0." },
+    { line: 24, stack: [MAIN, "record_matches_level (rec=0x0, level=\"INFO\")"], check: ["0x0", true], slot: null, term: term(""),
+      text: "rec == NULL compares the address 0x0 with NULL, which is 0x0. True. || stops at the first true part, so rec->level is never evaluated and nothing is read." },
+    { line: 25, stack: [MAIN, "record_matches_level (rec=0x0, level=\"INFO\")"], check: ["0x0", true], slot: null, term: term(OUT1),
+      text: "return 0. The check did exactly its job: a NULL went in, a defined answer came out." },
+    { line: 61, stack: [MAIN, "count_by_level (records=0x0, n=0, level=\"INFO\")"], check: null, slot: null, term: term(OUT1),
+      text: "Second call: count_by_level with a NULL array and a count of 0. count_by_level has no NULL check of its own." },
+    { line: 34, stack: [MAIN, "count_by_level (records=0x0, n=0, level=\"INFO\")"], check: null, slot: null, term: term(OUT1 + "\n" + OUT2),
+      text: "i < n is 0 < 0, false, so the loop body never runs. Nothing is touched and it returns 0. This one is safe by luck: n happened to be 0." },
+    { line: 63, stack: [MAIN, "count_by_level (records=0x0, n=3, level=\"INFO\")"], check: null, slot: null, term: term(OUT1 + "\n" + OUT2),
+      text: "Third call: the same NULL array, but now count_by_level believes there are 3 records in it. Look at line 35: it never uses records itself, it only computes &records[i] and hands that on." },
+    { line: 35, stack: [MAIN, "count_by_level (records=0x0, n=3, level=\"INFO\")  i=0"], check: null, slot: 0, term: term(OUT1 + "\n" + OUT2),
+      text: "i = 0. &records[0] is records + 0 × 16, which is 0x0. Computing an address reads nothing, so this line is fine." },
+    { line: 24, stack: [MAIN, "count_by_level (records=0x0, n=3, ...)  i=0", "record_matches_level (rec=0x0, level=\"INFO\")"], check: ["0x0", true], slot: 0, term: term(OUT1 + "\n" + OUT2),
+      text: "rec is 0x0, the check is true, return 0. So far it looks as though the check in record_matches_level is protecting count_by_level too." },
+    { line: 35, stack: [MAIN, "count_by_level (records=0x0, n=3, level=\"INFO\")  i=1"], check: null, slot: 1, term: term(OUT1 + "\n" + OUT2),
+      text: "i = 1. &records[1] is records + 1 × 16, which is 0x10. Still just arithmetic, still nothing read. But 0x10 is not NULL." },
+    { line: 24, stack: [MAIN, "count_by_level (records=0x0, n=3, ...)  i=1", "record_matches_level (rec=0x10, level=\"INFO\")"], check: ["0x10", false], slot: 1, term: term(OUT1 + "\n" + OUT2),
+      text: "rec == NULL compares 0x10 with 0x0. False. The check passes, so || goes on to its second part, rec->level, which means reading 8 bytes at address 0x10." },
+    { line: 24, err: true, crash: true, stack: [MAIN, "count_by_level (records=0x0, n=3, ...)  i=1", "record_matches_level (rec=0x10, level=\"INFO\")"], check: ["0x10", false], slot: 1, term: term(OUT1 + "\n" + OUT2 + "\n" + CRASH + GDB),
+      text: "Nothing is mapped at 0x10, so the read crashes, on the line whose whole job is to check for NULL. count_by_level trusted a check that answers a narrower question than it needed: is this pointer exactly zero, not does it point at a real record. Deciding which function owns the check is the interface decision, and here nobody made it." }
+  ];
+
+  var state = { at: 0, timer: null };
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+
+  function render(animate) {
+    var s = STEPS[state.at];
+    $("code").innerHTML = SRC.map(function (row) {
+      if (row[0] === null) return '<span class="ln gap" data-n="">' + esc(row[1]) + "</span>";
+      var cls = "ln" + (s.line === row[0] ? (s.err ? " err" : " on") : "");
+      return '<span class="' + cls + '" data-n="' + row[0] + '">' + (esc(row[1]) || " ") + "</span>";
+    }).join("");
+    $("stepNo").textContent = "Step " + (state.at + 1) + " of " + STEPS.length;
+    $("narr").textContent = s.text;
+    $("term").innerHTML = s.term;
+
+    $("stack").innerHTML = s.stack.map(function (f, i) {
+      var top = i === s.stack.length - 1;
+      return '<div class="' + (top ? (s.crash ? "dead" : "top") : "") + '">' + esc(f) + "</div>";
+    }).join("");
+
+    if (!s.check) {
+      $("check").innerHTML = '<code>rec == NULL</code><span class="verdict n">not running</span>';
+    } else {
+      var v = s.check[1];
+      $("check").innerHTML = '<code>rec == NULL</code><span class="arrow">&rarr;</span><code>' + s.check[0] +
+        ' == 0x0</code><span class="arrow">&rarr;</span><span class="verdict ' + (v ? "t" : "f") + '">' +
+        (v ? "true: caught, return 0" : "false: on to rec-&gt;level") + "</span>";
+    }
+
+    var addrs = ["0x00", "0x10", "0x20"];
+    $("strip").innerHTML = addrs.map(function (a, i) {
+      var cls = "slot" + (s.slot === i ? (s.crash ? " boom" : " cur") : "");
+      if (!animate && s.crash && s.slot === i) cls = "slot boom";
+      return '<div class="' + cls + '"><b>records[' + i + ']</b><span>' + a + " to 0x" + (i * 16 + 15).toString(16) + "</span></div>";
+    }).join("");
+    if (!animate) { var b = $("strip").querySelector(".boom"); if (b) b.style.animation = "none"; }
+    $("marker").innerHTML = addrs.map(function (a, i) {
+      if (s.slot !== i) return "<span></span>";
+      return '<span class="' + (s.crash ? "boom" : "") + '">' + (s.crash ? "↑ read here: crash" : "↑ rec = " + (i === 0 ? "0x0" : a)) + "</span>";
+    }).join("");
+
+    $("btnBack").disabled = state.at === 0;
+    $("btnStep").disabled = state.at === STEPS.length - 1;
+  }
+
+  function go(to, animate) {
+    state.at = Math.max(0, Math.min(STEPS.length - 1, to));
+    render(animate);
+    if (state.at === STEPS.length - 1) stop();
+  }
+  function stop() { if (state.timer) { clearInterval(state.timer); state.timer = null; } $("btnPlay").textContent = "Play"; }
+  function play() {
+    if (state.timer) { stop(); return; }
+    if (state.at === STEPS.length - 1) go(0, false);
+    $("btnPlay").textContent = "Pause";
+    state.timer = setInterval(function () { go(state.at + 1, true); }, 2600);
+  }
+
+  $("btnStep").addEventListener("click", function () { stop(); go(state.at + 1, true); });
+  $("btnBack").addEventListener("click", function () { stop(); go(state.at - 1, false); });
+  $("btnPlay").addEventListener("click", play);
+  $("btnReset").addEventListener("click", function () { stop(); go(0, false); });
+  document.addEventListener("keydown", function (e) {
+    if (e.target && e.target.tagName === "BUTTON" && e.key === " ") return;
+    if (e.key === "ArrowRight" || e.key === " ") { e.preventDefault(); stop(); go(state.at + 1, true); }
+    else if (e.key === "ArrowLeft") { e.preventDefault(); stop(); go(state.at - 1, false); }
+    else if (e.key === "p" || e.key === "P") { play(); }
+  });
+
+  render(false);
+})();
+</script>
+</body>
+</html>
